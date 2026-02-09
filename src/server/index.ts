@@ -48,22 +48,63 @@ server.on("upgrade", (req, socket, head) => {
       // Connect to OpenClaw Gateway
       const ocWs = new WebSocket(ocUrl);
 
-      ocWs.on("open", () => {
-        // Authenticate with OpenClaw
-        ocWs.send(
-          JSON.stringify({
-            type: "req",
-            id: "__auth__",
-            method: "connect",
-            params: { auth: { token } },
-          })
-        );
-      });
+      let authenticated = false;
 
-      // Relay OpenClaw → Browser
+      // Wait for connect.challenge, then send connect with required fields
       ocWs.on("message", (data) => {
+        const msg = data.toString();
+        try {
+          const parsed = JSON.parse(msg);
+
+          // Handle connect.challenge → respond with full connect params
+          if (!authenticated && parsed.type === "event" && parsed.event === "connect.challenge") {
+            const nonce = parsed.payload?.nonce;
+            ocWs.send(
+              JSON.stringify({
+                type: "req",
+                id: "__auth__",
+                method: "connect",
+                params: {
+                  minProtocol: 3,
+                  maxProtocol: 3,
+                  client: {
+                    id: "mission-control",
+                    version: "1.0.0",
+                    platform: "linux",
+                    mode: "operator",
+                  },
+                  role: "operator",
+                  scopes: ["operator.read", "operator.write"],
+                  caps: [],
+                  commands: [],
+                  permissions: {},
+                  auth: { token },
+                  locale: "en-US",
+                  userAgent: "mission-control/1.0.0",
+                  ...(nonce ? { device: { nonce } } : {}),
+                },
+              })
+            );
+            return; // Don't relay challenge to browser
+          }
+
+          // Mark authenticated on successful connect response
+          if (!authenticated && parsed.type === "res" && parsed.id === "__auth__") {
+            if (parsed.ok) {
+              authenticated = true;
+              console.log("[ws-proxy] Authenticated with OpenClaw");
+            } else {
+              console.error("[ws-proxy] Auth failed:", JSON.stringify(parsed.error));
+            }
+            return; // Don't relay auth response to browser
+          }
+        } catch {
+          // Not JSON, relay as-is
+        }
+
+        // Relay OpenClaw → Browser
         if (clientWs.readyState === WebSocket.OPEN) {
-          clientWs.send(data.toString());
+          clientWs.send(msg);
         }
       });
 
