@@ -17,7 +17,25 @@ initDb();
 
 // Middleware
 app.use("*", logger());
-app.use("/api/*", cors());
+app.use("/api/*", cors({
+  origin: "https://mission.periorcorp.com",
+  credentials: true,
+}));
+
+// Rate limit hooks endpoint (60 req/min per IP)
+const hookRateLimit = new Map<string, number[]>();
+app.use("/api/hooks/*", async (c, next) => {
+  const ip = c.req.header("x-forwarded-for") || "unknown";
+  const now = Date.now();
+  const window = hookRateLimit.get(ip) || [];
+  const recent = window.filter((t) => now - t < 60000);
+  if (recent.length >= 60) {
+    return c.json({ error: "rate limited" }, 429);
+  }
+  recent.push(now);
+  hookRateLimit.set(ip, recent);
+  await next();
+});
 
 // API routes
 app.route("/api/tasks", tasksRoutes);
